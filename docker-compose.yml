@@ -1,0 +1,62 @@
+version: "3.8"
+
+services: 
+  #1. Redis Cache and Message Broker
+  redis:
+    image: redis:7.2-alpine
+    container_name: zenith_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    networks:
+      - zenith_network
+
+  #PostgreSQL Relational DB
+  postgres:
+    image: postgres:15-alpine
+    container_name: zenith_postgres
+    environment:
+      POSTGRES_USER: yash
+      POSTGRES_PASSWORD: 1qaz2wsx
+      POSTGRES_DB: zenithride
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - zenith_network
+
+  simulator:
+    build: ./simulator
+    container_name: zenith_simulator
+    environment:
+      REDIS_HOST: redis  # Inside Docker, connect to the "redis" container
+      DB_HOST: postgres  # Inside Docker, connect to the "postgres" container
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - zenith_network
+  
+  gateway:
+    build: ./gateway-service
+    container_name: zenith-gateway
+    ports:
+      - "5000:5000"
+    enivironment: 
+      REDIS_HOST: redis
+    depends_on:
+      - redis
+    network:
+      - zenith_network
+      
+volumes:
+  redis_data:
+  postgres_data:
+  shared_models:
+
+networks:
+  zenith_network:
+    driver: bridge
