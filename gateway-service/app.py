@@ -52,8 +52,6 @@ def token_required(f):
     return decorated
 
 
-
-
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -82,7 +80,7 @@ def login():
     access_token = jwt.encode(
         {
             'user': username,
-            'exp': datetime.datetime.now() + datetime.timedelta(minutes=15)
+            'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)
         },
         app.config['SECRET_KEY'], algorithm="HS256"
     )
@@ -207,7 +205,7 @@ def request_ride(current_user):
         'status_url': f'/ride-status/{job_id}'
     }), 202
 
-@app.route('/get_ride_status', methods=['GET'])
+@app.route('/ride-status/<job_id>', methods=['GET'])
 def get_ride_status(job_id):
     result = r.hgetall(f"job:{job_id}:result")
     if not result:
@@ -234,7 +232,7 @@ def inject_drift(current_user):
     enable = data.get('enable', True)
 
     r.set("inject_drift", "true" if enable else "false")
-    
+
     return jsonify({
         'message': f"Drift injection {'enabled' if enable else 'disabled'}.",
         'inject_drift': r.get("inject_drift")

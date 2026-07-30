@@ -45,11 +45,11 @@ services:
     container_name: zenith-gateway
     ports:
       - "5000:5000"
-    enivironment: 
+    environment: 
       REDIS_HOST: redis
     depends_on:
       - redis
-    network:
+    networks:
       - zenith_network
       
 volumes:
