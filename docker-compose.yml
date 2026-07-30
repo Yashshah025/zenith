@@ -52,6 +52,14 @@ services:
     networks:
       - zenith_network
       
+  worker:
+    build: ./inference-worker
+    environment: 
+      REDIS_HOST: redis
+    depends_on:
+      - redis
+    networks:
+      - zenith_network
 volumes:
   redis_data:
   postgres_data:
