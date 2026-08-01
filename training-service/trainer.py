@@ -47,7 +47,7 @@ def train_and_save_model():
         "pickup_latitude", "pickup_longitude", "dropoff_latitude", "dropoff_longitude",
         "passenger_count", "active_rides_last_10m", "avg_speed_last_10m", "demand_supply_ratio"
     ]
-    target = "actaul_duration"
+    target = "actual_duration"
 
     X = df[features].astype(float)
     y = df[target].astype(float)
@@ -70,7 +70,7 @@ def train_and_save_model():
     versioned_path = f"{MODEL_DIR}/model_v{version}.bin"
 
     model.save_model(versioned_path)
-    model.save(MODEL_PATH)
+    model.save_model(MODEL_PATH)
     print(f"[TRAINER] Saved models to registry: {versioned_path} and {MODEL_PATH}")
 
     r.set("baseline_mae", f"{val_mae:.2f}")

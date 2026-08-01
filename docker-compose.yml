@@ -13,7 +13,7 @@ services:
     networks:
       - zenith_network
 
-  #PostgreSQL Relational DB
+  #2 PostgreSQL Relational DB
   postgres:
     image: postgres:15-alpine
     container_name: zenith_postgres
@@ -28,18 +28,21 @@ services:
     networks:
       - zenith_network
 
+  #3 Streaming Data Simulator Service
   simulator:
     build: ./simulator
     container_name: zenith_simulator
     environment:
       REDIS_HOST: redis  # Inside Docker, connect to the "redis" container
       DB_HOST: postgres  # Inside Docker, connect to the "postgres" container
+      PYTHONUNBUFFERED: 1
     depends_on:
       - redis
       - postgres
     networks:
       - zenith_network
   
+  #4 API Gateway Service
   gateway:
     build: ./gateway-service
     container_name: zenith-gateway
@@ -47,19 +50,54 @@ services:
       - "5000:5000"
     environment: 
       REDIS_HOST: redis
+      PYTHONUNBUFFERED: 1
     depends_on:
       - redis
     networks:
       - zenith_network
       
+  # 5. Inference Worker Service (Updated to mount shared volume!)
   worker:
     build: ./inference-worker
     environment: 
       REDIS_HOST: redis
+      PYTHONUNBUFFERED: 1
+    # Mount the shared volume so workers can read model.bin files
+    volumes:
+      - shared_models:/shared-models
     depends_on:
       - redis
     networks:
       - zenith_network
+
+  # 6. Drift Monitor Service
+  monitor:
+    build: ./drift-monitor
+    container_name: zenith_drift_monitor
+    environment: 
+      REDIS_HOST: redis
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      - redis
+    networks:
+      - zenith_network
+
+  training-service:
+    build: ./training-service
+    container_name: zenith_training_service
+    environment:
+      REDIS_HOST: redis
+      DB_HOST: postgres
+      PYTHONUNBUFFERED: 1
+    # Mount the shared volume so trainer can write model.bin files
+    volumes:
+     - shared_models:/shared-models
+    depends_on:
+     - redis
+     - postgres
+    networks:
+     - zenith_network
+
 volumes:
   redis_data:
   postgres_data:

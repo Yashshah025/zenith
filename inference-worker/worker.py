@@ -4,22 +4,30 @@ import redis
 import sys
 import threading
 import time
+import json
+import pandas as pd
+import xgboost as xgb
 
+# Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = 6379
 STREAM_NAME = "eta_requests"
 GROUP_NAME = "eta_worker_group"
 WORKER_NAME = f"worker_{uuid.uuid4().hex[:8]}"
 
+# Global model pointers
+active_model = None
+model_version = "v0_baseline_mock"
+
 print(f"Starting {WORKER_NAME}...")
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
+# 1. Initialize Redis Consumer Group
 def init_consumer_group():
     try:
         groups = r.xinfo_groups(STREAM_NAME)
         group_exists = any(g['name'] == GROUP_NAME for g in groups)
-
     except redis.exceptions.ResponseError:
         group_exists = False
 
@@ -31,6 +39,7 @@ def init_consumer_group():
             if "BUSYGROUP" not in str(e):
                 raise e
 
+# 2. Chaos Listener: Listen for simulated container crashes
 def listen_for_chaos():
     pubsub = r.pubsub()
     pubsub.subscribe("chaos_channel")
@@ -41,30 +50,103 @@ def listen_for_chaos():
             print(f"\n💥 CHAOS RECEIVED: Poison Pill. Worker {WORKER_NAME} is shutting down immediately!")
             sys.exit(0)
 
-threading.Thread(target=listen_for_chaos, daemon=True).start()
+# 3. Model Loader Helper
+def load_active_model(path):
+    global active_model, model_version
+    try:
+        if os.path.exists(path):
+            model_instance = xgb.XGBRegressor()
+            model_instance.load_model(path)
+            active_model = model_instance
+            # Extract version from filename or use a timestamp
+            model_version = os.path.basename(path).replace(".bin", "")
+            print(f"[WORKER] Successfully loaded model from {path} (version: {model_version})")
+            return True
+    except Exception as e:
+        print(f"[WORKER] Error loading model: {e}")
+    return False
 
+# 4. Model Hot-Swapping Listener
+def listen_for_model_updates():
+    global active_model, model_version
+    pubsub = r.pubsub()
+    pubsub.subscribe("model_updates")
+    print(f"[{WORKER_NAME}] Listening for model update alerts...")
+
+    for message in pubsub.listen():
+        if message["type"] == 'message':
+            try:
+                event_data = json.loads(message['data'])
+                new_path = event_data.get("model_path")
+                version = event_data.get("version")
+                print(f"\n🔄 [{WORKER_NAME}] NEW MODEL DETECTED: {version}. Hot-swapping weights...")
+
+                new_model = xgb.XGBRegressor()
+                new_model.load_model(new_path)
+
+                active_model = new_model
+                model_version = version
+                print(f"[{WORKER_NAME}] Hot-swap successful! Running on version {version}.")
+            except Exception as e:
+                print(f"[{WORKER_NAME}] Error hot-swapping model weights: {e}")
+
+# 5. ML & Fallback Predictor
 def predict_eta_batch(batch_payloads):
-    predictions = []
-    for payload in batch_payloads:
-        pickup_lat = float(payload["pickup_latitude"])
-        pickup_lon = float(payload["pickup_longitude"])
-        dropoff_lat = float(payload["dropoff_latitude"])
-        dropoff_lon = float(payload["dropoff_longitude"])
-        
-        active_rides = int(payload.get("active_rides_last_10m", 10))
-        avg_speed = float(payload.get("avg_speed_last_10m", 15.0))
-        ratio = float(payload.get("demand_supply_ratio", 1.0))
+    global active_model
+    
+    # FALLBACK: If no ML model is loaded, run the math formula
+    if active_model is None:
+        predictions = []
+        for payload in batch_payloads:
+            pickup_lat = float(payload["pickup_latitude"])
+            pickup_lon = float(payload["pickup_longitude"])
+            dropoff_lat = float(payload["dropoff_latitude"])
+            dropoff_lon = float(payload["dropoff_longitude"])
+            
+            active_rides = int(payload.get("active_rides_last_10m", 10))
+            avg_speed = float(payload.get("avg_speed_last_10m", 15.0))
+            ratio = float(payload.get("demand_supply_ratio", 1.0))
 
-        distance_miles = (abs(pickup_lat - dropoff_lat) + abs(pickup_lon - dropoff_lon)) * 69.0
-        duration_seconds = (distance_miles / avg_speed) * 3600
-        duration_seconds *= (1.0 + (active_rides * 0.02))
-        duration_seconds *= ratio
+            distance_miles = (abs(pickup_lat - dropoff_lat) + abs(pickup_lon - dropoff_lon)) * 69.0
+            duration_seconds = (distance_miles / avg_speed) * 3600
+            duration_seconds *= (1.0 + (active_rides * 0.02))
+            duration_seconds *= ratio
 
-        prediction = max(3.0, min(duration_seconds / 60.0, 45.0))
-        predictions.append(prediction)
+            prediction = max(3.0, min(duration_seconds / 60.0, 45.0))
+            predictions.append(prediction)
+        return predictions
 
-    return predictions
+    # ACTIVE PATH: Predict using XGBoost on the Pandas DataFrame
+    features = [
+        "pickup_latitude", "pickup_longitude", "dropoff_latitude", "dropoff_longitude",
+        "passenger_count", "active_rides_last_10m", "avg_speed_last_10m", "demand_supply_ratio"
+    ]
+    try:
+        df = pd.DataFrame(batch_payloads)
+        X = df[features].astype(float)
+        predictions = active_model.predict(X)
+        return list(predictions)
+    except Exception as e:
+        print(f"[WORKER] ML prediction failed: {e}. Falling back to math.")
+        # Fallback math loop
+        fallback_predictions = []
+        for payload in batch_payloads:
+            pickup_lat = float(payload["pickup_latitude"])
+            pickup_lon = float(payload["pickup_longitude"])
+            dropoff_lat = float(payload["dropoff_latitude"])
+            dropoff_lon = float(payload["dropoff_longitude"])
+            active_rides = int(payload.get("active_rides_last_10m", 10))
+            avg_speed = float(payload.get("avg_speed_last_10m", 15.0))
+            ratio = float(payload.get("demand_supply_ratio", 1.0))
+            distance_miles = (abs(pickup_lat - dropoff_lat) + abs(pickup_lon - dropoff_lon)) * 69.0
+            duration_seconds = (distance_miles / avg_speed) * 3600
+            duration_seconds *= (1.0 + (active_rides * 0.02))
+            duration_seconds *= ratio
+            prediction = max(3.0, min(duration_seconds / 60.0, 45.0))
+            fallback_predictions.append(prediction)
+        return fallback_predictions
 
+# 6. Batch Processing & Acknowledgment
 def process_batch(batch):
     if not batch:
         return
@@ -82,7 +164,7 @@ def process_batch(batch):
         r.hset(f"job:{job_id}:result", mapping={
             "eta_seconds": f"{eta:.2f}",
             "timestamp": str(time.time()),
-            "model_version": "v1_baseline_mock"
+            "model_version": model_version  # Dynamic versioning!
         })
         r.expire(f"job:{job_id}:result", 3600)
 
@@ -90,6 +172,7 @@ def process_batch(batch):
         
     print(f"[{WORKER_NAME}] Successfully processed and acknowledged {len(payloads)} jobs.")
 
+# 7. Crash Recovery (XAUTOCLAIM) Loop
 def claim_abandoned_jobs():
     print(f"[{WORKER_NAME}] Starting crash recovery loop...")
     while True:
@@ -105,7 +188,7 @@ def claim_abandoned_jobs():
             
             claimed_messages = result[1]
             if claimed_messages:
-                print(f"\n [{WORKER_NAME}] Auto-Claimed {len(claimed_messages)} abandoned jobs from a dead worker!")
+                print(f"\n🚨 [{WORKER_NAME}] Auto-Claimed {len(claimed_messages)} abandoned jobs from a dead worker!")
                 process_batch(claimed_messages)
                 
         except Exception as e:
@@ -113,9 +196,18 @@ def claim_abandoned_jobs():
             
         time.sleep(10)
 
+# 8. Main execution entry
 def main():
     init_consumer_group()
+    
+    # Try to load existing model.bin on startup
+    load_active_model("/shared-models/model.bin")
+
+    # Start Pub/Sub threads
+    threading.Thread(target=listen_for_chaos, daemon=True).start()
+    threading.Thread(target=listen_for_model_updates, daemon=True).start()
     threading.Thread(target=claim_abandoned_jobs, daemon=True).start()
+
     print(f"[{WORKER_NAME}] Worker is ready and consuming requests...")
 
     batch_buffer = []
@@ -133,7 +225,7 @@ def main():
             if response:
                 messages = response[0][1]
                 batch_buffer.extend(messages)
-            time_since_last_batch = (time.time() - last_batch_time) * 1000  # milliseconds
+            time_since_last_batch = (time.time() - last_batch_time) * 1000
 
             if batch_buffer and (len(batch_buffer) >= 10 or time_since_last_batch >= 30):
                 process_batch(batch_buffer)
