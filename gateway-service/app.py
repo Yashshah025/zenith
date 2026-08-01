@@ -220,12 +220,32 @@ def get_ride_status(job_id):
     }), 200
 
 @app.route('/chaos/kill-worker', methods=['POST'])
+@limiter.exempt
 @token_required
 def kill_worker(current_user):
-    r.publish("chaos_channel", "shutdown")
-    return jsonify({'message': 'Chaos event triggered: Shutdown signal sent to a worker.'}), 200
+    import random
+    try:
+        # 1. Query Redis for all consumers in the worker group
+        consumers = r.xinfo_consumers("eta_requests", "eta_worker_group")
+        
+        # 2. Filter ONLY active workers (idle time < 5 seconds)
+        active_consumers = [c for c in consumers if c['idle'] < 5000]
+        
+        if active_consumers:
+            # 3. Pick a random active worker name
+            target_worker = random.choice(active_consumers)['name']
+            print(f"[GATEWAY] 🎯 Targeting ACTIVE worker for chaos crash: {target_worker}")
+            
+            # 4. Publish only that worker's name to the chaos channel
+            r.publish("chaos_channel", target_worker)
+            return jsonify({'message': f"Chaos signal sent to target worker: {target_worker}"}), 200
+    except Exception as e:
+        print(f"[GATEWAY] Error querying consumers: {e}")
+        
+    return jsonify({'message': 'No active workers registered in group yet to kill.'}), 200
 
 @app.route('/chaos/inject-drift', methods=['POST'])
+@limiter.exempt
 @token_required
 def inject_drift(current_user):
     data = request.get_json() or {}
@@ -238,7 +258,27 @@ def inject_drift(current_user):
         'inject_drift': r.get("inject_drift")
     }), 200
 
+@app.route('/dashboard/metrics', methods=['GET'])
+@limiter.exempt
+@token_required
+def get_dashboard_metrics(current_user):
+    drift_metrics = r.hgetall("metrics:drift") or {}
 
+    try:
+        queue_size = r.xlen("eta_requests")
+    except Exception:
+        queue_size = 0
+
+    inject_drift_status = r.get("inject_drift") or "false"
+
+    return jsonify({
+        "rolling_mae": drift_metrics.get("rolling_mae", "0.00"),
+        "baseline_mae": drift_metrics.get("baseline_mae", "0.00"),
+        "drift_detected": drift_metrics.get("drift_detected", "false"),
+        "total_trips_monitored": drift_metrics.get("total_trips_monitored", "0"),
+        "queue_size": queue_size,
+        "inject_drift": inject_drift_status
+    }), 200
 
 
 if __name__ == '__main__':

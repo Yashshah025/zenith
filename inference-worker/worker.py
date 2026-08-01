@@ -46,9 +46,12 @@ def listen_for_chaos():
     print(f"[{WORKER_NAME}] Listening for chaos events...")
 
     for message in pubsub.listen():
-        if message["type"] == 'message' and message["data"] == 'shutdown':
-            print(f"\n💥 CHAOS RECEIVED: Poison Pill. Worker {WORKER_NAME} is shutting down immediately!")
-            sys.exit(0)
+        if message["type"] == 'message':
+            signal = message["data"]
+            # Shutdown ONLY if the signal is a global "shutdown" OR matches this worker's name!
+            if signal == 'shutdown' or signal == WORKER_NAME:
+                print(f"\n CHAOS RECEIVED: Poison Pill. Worker {WORKER_NAME} is shutting down immediately!")
+                os._exit(0)
 
 # 3. Model Loader Helper
 def load_active_model(path):

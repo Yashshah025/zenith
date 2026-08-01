@@ -59,6 +59,7 @@ services:
   # 5. Inference Worker Service (Updated to mount shared volume!)
   worker:
     build: ./inference-worker
+    restart: always
     environment: 
       REDIS_HOST: redis
       PYTHONUNBUFFERED: 1
