@@ -50,6 +50,7 @@ services:
       - "5000:5000"
     environment: 
       REDIS_HOST: redis
+      DB_HOST: postgres
       PYTHONUNBUFFERED: 1
     depends_on:
       - redis
@@ -62,6 +63,7 @@ services:
     restart: always
     environment: 
       REDIS_HOST: redis
+      DB_HOST: postgres
       PYTHONUNBUFFERED: 1
     # Mount the shared volume so workers can read model.bin files
     volumes:

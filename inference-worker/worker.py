@@ -7,6 +7,7 @@ import time
 import json
 import pandas as pd
 import xgboost as xgb
+import psycopg2
 
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
@@ -160,6 +161,20 @@ def process_batch(batch):
 
     predicted_etas = predict_eta_batch(payloads)
 
+    db_conn = None
+    try:
+        db_host = os.getenv("DB_HOST", "local_host")
+        db_conn = psycopg2.connect(
+            host = db_host,
+            database = "zenithride",
+            user = "yash",
+            password = "1qaz2wsx"
+        )
+        db_cur = db_conn.cursor()
+    except Exception as e:
+        print(f"[{WORKER_NAME}] Failed to connect to PostgreSQL for batch update: {e}")
+        db_cur = None
+
     for i, payload in enumerate(payloads):
         job_id = payload["job_id"]
         eta = predicted_etas[i]
@@ -171,7 +186,23 @@ def process_batch(batch):
         })
         r.expire(f"job:{job_id}:result", 3600)
 
+        if db_conn and db_cur:
+            try:
+                db_cur.execute("UPDATE rides SET predicted_eta = %s, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE ride_id = %s",
+                    (float(eta), job_id))
+            except Exception as e:
+                print(f"[{WORKER_NAME}] Failed to query Postgres update for ride {job_id}: {e}")
+
         r.xack(STREAM_NAME, GROUP_NAME, message_ids[i])
+
+        if db_conn:
+            try:
+                db_conn.commit()
+                db_cur.close()
+                db_conn.close()
+                print(f"[{WORKER_NAME}] PostgreSQL batch statuses updated to 'active'.")
+            except Exception as e:
+                print(f"[{WORKER_NAME}] Error committing database batch: {e}")
         
     print(f"[{WORKER_NAME}] Successfully processed and acknowledged {len(payloads)} jobs.")
 
